@@ -1,0 +1,163 @@
+name: DevSecOps CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+    branches:
+      - "**"
+
+permissions:
+  contents: read
+
+jobs:
+  # 1. Unit Testing
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r dev-requirements.txt
+
+      - name: Run Pytest
+        run: |
+          PYTHONPATH=. pytest -q
+
+  # 2. Static Application Security Testing
+  sast:
+    name: SAST - Bandit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r dev-requirements.txt
+
+      - name: Run Bandit
+        run: |
+          bandit -r app -ll
+
+  # 3. Software Composition Analysis
+  sca:
+    name: SCA - pip-audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r dev-requirements.txt
+
+      - name: Audit Application Dependencies
+        run: |
+          pip-audit -r requirements.txt
+
+      - name: Audit Development Dependencies
+        run: |
+          pip-audit -r dev-requirements.txt
+
+  # 4. Secret Scanning
+  secret_scan:
+    name: Secret Scanning - Gitleaks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # 5. Build and Push Docker Image
+  build_and_push:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+
+    needs:
+      - test
+      - sast
+      - sca
+      - secret_scan
+
+    if: >-
+      github.event_name == 'push' &&
+      needs.test.result == 'success' &&
+      needs.sast.result == 'success' &&
+      needs.sca.result == 'success' &&
+      needs.secret_scan.result == 'success'
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and Push Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/notes-app:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/notes-app:${{ github.sha }}
+
+  # 6. Docker Image Vulnerability Scanning
+  image_scan:
+    name: Image Scanning - Trivy
+    runs-on: ubuntu-latest
+
+    needs:
+      - build_and_push
+
+    if: >-
+      github.event_name == 'push' &&
+      needs.build_and_push.result == 'success'
+
+    steps:
+      - name: Scan Docker Image
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/notes-app:${{ github.sha }}
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: "0"
