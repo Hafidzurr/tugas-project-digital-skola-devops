@@ -4,6 +4,10 @@ const bodyParser = require('body-parser');
 const store = require('./store');
 
 const app = express();
+
+// Disable X-Powered-By header
+app.disable('x-powered-by');
+
 app.use(bodyParser.json());
 
 app.get('/', (_req, res) => {
